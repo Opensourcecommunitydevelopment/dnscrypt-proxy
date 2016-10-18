@@ -95,19 +95,21 @@ host_only(char *line)
     return s2;
 }
 
-static StrList *
-parse_str_list(const char * const file)
+static int
+parse_str_list(StrList ** const str_list_p, const char * const file)
 {
     char     line[512U];
     char    *host;
     FILE    *fp;
     char    *ptr;
-    StrList *str_list = NULL;
     StrList *str_list_item;
     StrList *str_list_last = NULL;
+    int      ret = -1;
 
+    assert(str_list_p != NULL);
+    *str_list_p = NULL;
     if ((fp = fopen(file, "r")) == NULL) {
-        return NULL;
+        return -1;
     }
     while (fgets(line, (int) sizeof line, fp) != NULL) {
         while ((ptr = strchr(line, '\n')) != NULL ||
@@ -122,16 +124,18 @@ parse_str_list(const char * const file)
             break;
         }
         str_list_item->next = NULL;
-        *(str_list == NULL ? &str_list : &str_list_last->next) = str_list_item;
+        *(*str_list_p == NULL ? str_list_p : &str_list_last->next) = str_list_item;
         str_list_last = str_list_item;
     }
     if (!feof(fp)) {
-        str_list_free(str_list);
-        str_list = NULL;
+        str_list_free(*str_list_p);
+        *str_list_p = NULL;
+    } else {
+        ret = 0;
     }
     fclose(fp);
 
-    return str_list;
+    return ret;
 }
 
 
@@ -248,21 +252,18 @@ dcplugin_init(DCPlugin * const dcplugin, int argc, char *argv[])
                                    &option_index)) != -1) {
         switch (opt_flag) {
         case 'd':
-            if ((blocking->domains = parse_str_list(optarg)) == NULL) {
+            if (parse_str_list(&blocking->domains, optarg) != 0) {
                 return -1;
             }
             break;
         case 'i':
-            if ((blocking->ips = parse_str_list(optarg)) == NULL) {
+            if (parse_str_list(&blocking->ips, optarg) != 0) {
                 return -1;
             }
             break;
         default:
             return -1;
         }
-    }
-    if (blocking->domains == NULL && blocking->ips == NULL) {
-        return -1;
     }
     return 0;
 }
@@ -288,13 +289,20 @@ static DCPluginSyncFilterResult
 apply_block_domains(DCPluginDNSPacket *dcp_packet, Blocking * const blocking,
                     ldns_pkt * const packet)
 {
-    StrList  *scanned;
-    ldns_rr  *question;
-    char     *owner_str;
-    size_t    owner_str_len;
+    StrList                  *scanned;
+    ldns_rr                  *question;
+    ldns_rr_list             *questions;
+    char                     *owner_str;
+    uint8_t                  *wire_data;
+    size_t                    owner_str_len;
+    DCPluginSyncFilterResult  result = DCP_SYNC_FILTER_RESULT_OK;
 
     scanned = blocking->domains;
-    question = ldns_rr_list_rr(ldns_pkt_question(packet), 0U);
+    questions = ldns_pkt_question(packet);
+    if (ldns_rr_list_rr_count(questions) != (size_t) 1U) {
+        return DCP_SYNC_FILTER_RESULT_ERROR;
+    }
+    question = ldns_rr_list_rr(questions, 0U);
     if ((owner_str = ldns_rdf2str(ldns_rr_owner(question))) == NULL) {
         return DCP_SYNC_FILTER_RESULT_FATAL;
     }
@@ -304,14 +312,17 @@ apply_block_domains(DCPluginDNSPacket *dcp_packet, Blocking * const blocking,
     }
     do {
         if (wildcard_match(owner_str, scanned->str)) {
-            LDNS_RCODE_SET(dcplugin_get_wire_data(dcp_packet),
-                           LDNS_RCODE_REFUSED);
+            wire_data = dcplugin_get_wire_data(dcp_packet);
+            LDNS_QR_SET(wire_data);
+            LDNS_RA_SET(wire_data);
+            LDNS_RCODE_SET(wire_data, LDNS_RCODE_REFUSED);
+            result = DCP_SYNC_FILTER_RESULT_DIRECT;
             break;
         }
     } while ((scanned = scanned->next) != NULL);
     free(owner_str);
 
-    return DCP_SYNC_FILTER_RESULT_OK;
+    return result;
 }
 
 static DCPluginSyncFilterResult
@@ -351,13 +362,13 @@ apply_block_ips(DCPluginDNSPacket *dcp_packet, Blocking * const blocking,
 }
 
 DCPluginSyncFilterResult
-dcplugin_sync_post_filter(DCPlugin *dcplugin, DCPluginDNSPacket *dcp_packet)
+dcplugin_sync_pre_filter(DCPlugin *dcplugin, DCPluginDNSPacket *dcp_packet)
 {
     Blocking                 *blocking = dcplugin_get_user_data(dcplugin);
     ldns_pkt                 *packet = NULL;
     DCPluginSyncFilterResult  result = DCP_SYNC_FILTER_RESULT_OK;
 
-    if (blocking->domains == NULL && blocking->ips == NULL) {
+    if (blocking->domains == NULL) {
         return DCP_SYNC_FILTER_RESULT_OK;
     }
     if (ldns_wire2pkt(&packet, dcplugin_get_wire_data(dcp_packet),
@@ -367,13 +378,33 @@ dcplugin_sync_post_filter(DCPlugin *dcplugin, DCPluginDNSPacket *dcp_packet)
     }
     if (blocking->domains != NULL &&
         (result = apply_block_domains(dcp_packet, blocking, packet)
-            != DCP_SYNC_FILTER_RESULT_OK)) {
+         != DCP_SYNC_FILTER_RESULT_OK)) {
         ldns_pkt_free(packet);
         return result;
     }
+    ldns_pkt_free(packet);
+
+    return DCP_SYNC_FILTER_RESULT_OK;
+}
+
+DCPluginSyncFilterResult
+dcplugin_sync_post_filter(DCPlugin *dcplugin, DCPluginDNSPacket *dcp_packet)
+{
+    Blocking                 *blocking = dcplugin_get_user_data(dcplugin);
+    ldns_pkt                 *packet = NULL;
+    DCPluginSyncFilterResult  result = DCP_SYNC_FILTER_RESULT_OK;
+
+    if (blocking->ips == NULL) {
+        return DCP_SYNC_FILTER_RESULT_OK;
+    }
+    if (ldns_wire2pkt(&packet, dcplugin_get_wire_data(dcp_packet),
+                      dcplugin_get_wire_data_len(dcp_packet))
+        != LDNS_STATUS_OK) {
+        return DCP_SYNC_FILTER_RESULT_ERROR;
+    }
     if (blocking->ips != NULL &&
         (result = apply_block_ips(dcp_packet, blocking, packet)
-            != DCP_SYNC_FILTER_RESULT_OK)) {
+         != DCP_SYNC_FILTER_RESULT_OK)) {
         ldns_pkt_free(packet);
         return result;
     }

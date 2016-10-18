@@ -59,6 +59,7 @@ static struct option getopt_long_options[] = {
     { "test", 1, NULL, 't' },
     { "tcp-only", 0, NULL, 'T' },
     { "edns-payload-size", 1, NULL, 'e' },
+    { "ignore-timestamps", 0, NULL, 'I' },
     { "version", 0, NULL, 'V' },
     { "help", 0, NULL, 'h' },
 #ifdef _WIN32
@@ -69,9 +70,9 @@ static struct option getopt_long_options[] = {
     { NULL, 0, NULL, 0 }
 };
 #ifndef _WIN32
-static const char *getopt_options = "a:de:Ehk:K:L:l:m:n:p:r:R:St:u:N:TVX:Z:";
+static const char *getopt_options = "a:de:EhIk:K:L:l:m:n:p:r:R:St:u:N:TVX:Z:";
 #else
-static const char *getopt_options = "a:e:Ehk:K:L:l:m:n:r:R:t:u:N:TVX:";
+static const char *getopt_options = "a:e:EhIk:K:L:l:m:n:r:R:t:u:N:TVX:";
 #endif
 
 #ifndef DEFAULT_CONNECTIONS_COUNT_MAX
@@ -129,13 +130,14 @@ void options_init_with_default(AppContext * const app_context,
     proxy_context->user_name = NULL;
     proxy_context->user_id = (uid_t) 0;
     proxy_context->user_group = (uid_t) 0;
-#endif
     proxy_context->user_dir = NULL;
+#endif
     proxy_context->daemonize = 0;
     proxy_context->test_cert_margin = (time_t) -1;
     proxy_context->test_only = 0;
     proxy_context->tcp_only = 0;
     proxy_context->ephemeral_keys = 0;
+    proxy_context->ignore_timestamps = 0;
 }
 
 static int
@@ -308,14 +310,17 @@ options_parse_resolvers_list(ProxyContext * const proxy_context, char *buf)
     assert(proxy_context->resolver_name != NULL);
     buf = minicsv_parse_line(buf, headers, &headers_count,
                              sizeof headers / sizeof headers[0]);
-    if (headers_count < 4U) {
+    if (headers_count < 4U || headers_count > OPTIONS_RESOLVERS_LIST_MAX_COLS) {
         return -1;
     }
     do {
         buf = minicsv_parse_line(buf, cols, &cols_count,
                                  sizeof cols / sizeof cols[0]);
+        if (cols_count < 4U || cols_count > OPTIONS_RESOLVERS_LIST_MAX_COLS) {
+            continue;
+        }
         minicsv_trim_cols(cols, cols_count);
-        if (cols_count < 4U || *cols[0] == 0 || *cols[0] == '#') {
+        if (*cols[0] == 0 || *cols[0] == '#') {
             continue;
         }
         if (options_parse_resolver(proxy_context, headers, headers_count,
@@ -557,6 +562,9 @@ options_parse(AppContext * const app_context,
         case 'h':
             options_usage();
             exit(0);
+        case 'I':
+            proxy_context->ignore_timestamps = 1;
+            break;
         case 'k':
             proxy_context->provider_publickey_s = optarg;
             break;
@@ -715,8 +723,11 @@ options_parse(AppContext * const app_context,
 void
 options_free(ProxyContext * const proxy_context)
 {
+    (void) proxy_context;
+#ifndef _WIN32
     free(proxy_context->user_name);
     proxy_context->user_name = NULL;
     free(proxy_context->user_dir);
     proxy_context->user_dir = NULL;
+#endif
 }

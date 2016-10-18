@@ -1,5 +1,5 @@
 AC_PREREQ([2.65])
-AC_INIT([dnscrypt-proxy],[1.6.1],[https://dnscrypt.org])
+AC_INIT([dnscrypt-proxy],[1.7.0],[https://dnscrypt.org])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_AUX_DIR([libltdl/config])
 AC_CONFIG_SRCDIR([src/proxy/app.c])
@@ -48,6 +48,23 @@ AC_ARG_WITH(safecode,
   ])
 ])
 
+AC_ARG_ENABLE(plugins,
+[AS_HELP_STRING(--disable-plugins,Disable support for plugins)],
+[
+  AS_IF([test "x$enableval" = "xno"], [
+    plugins="disabled"
+  ], [
+    plugins="enabled"
+  ])
+],
+[
+  plugins="enabled"
+])
+AS_IF([test "$plugins" = "enabled"], [
+  CPPFLAGS="$CPPFLAGS -DPLUGINS=1"
+])
+AM_CONDITIONAL(PLUGINS, test x$plugins = xenabled)
+
 AC_ARG_ENABLE(debug,
 [AS_HELP_STRING(--enable-debug,For maintainers only - please do not use)],
 [
@@ -65,17 +82,6 @@ AC_ARG_ENABLE(debug,
     CPPFLAGS="$CPPFLAGS -DDEBUG=1"
   ])
 ])
-
-plugins=disabled
-AC_ARG_ENABLE(plugins,
-[AS_HELP_STRING(--enable-plugins,Enable support for plugins)],
-[
-	AS_IF([test "x$enableval" != "xno"], [
-		CPPFLAGS="$CPPFLAGS -DPLUGINS=1"
-		plugins=enabled
-	])
-])
-AM_CONDITIONAL(PLUGINS, test x$plugins = xenabled)
 
 relaxed_plugins_permissions=disabled
 AC_ARG_ENABLE(relaxed-plugins-permissions,
@@ -256,16 +262,30 @@ AC_SUBST([PROBES_SOURCE])
 AS_IF([test -d /usr/local/include], [
   CPPFLAGS="$CPPFLAGS -I/usr/local/include"
 ])
-
 AS_IF([test -d /usr/local/lib], [
   LDFLAGS="$LDFLAGS -L/usr/local/lib"
+])
+
+AS_IF([test -d /usr/local/opt/libressl/include], [
+  CPPFLAGS="$CPPFLAGS -I/usr/local/opt/libressl/include"
+], [
+  AS_IF([test -d /usr/local/opt/openssl/include], [
+    CPPFLAGS="$CPPFLAGS -I/usr/local/opt/openssl/include"
+  ])
+])
+AS_IF([test -d /usr/local/opt/libressl/lib], [
+  LDFLAGS="$LDFLAGS -L/usr/local/opt/libressl/lib"
+], [
+  AS_IF([test -d /usr/local/opt/openssl/lib], [
+    LDFLAGS="$LDFLAGS -L/usr/local/opt/openssl/lib"
+  ])
 ])
 
 dnl Checks for header files.
 
 AC_SYS_LARGEFILE
 AC_CHECK_HEADERS([sys/cdefs.h sys/feature_tests.h])
-AC_CHECK_HEADERS([execinfo.h paths.h pwd.h uuid/uuid.h])
+AC_CHECK_HEADERS([execinfo.h paths.h pwd.h grp.h uuid/uuid.h])
 AC_CHECK_HEADERS([sandbox.h])
 AC_CHECK_HEADERS([ws2tcpip.h])
 

@@ -79,8 +79,14 @@ cert_parse_bincert(ProxyContext * const proxy_context,
     const uint32_t now_u32 = (uint32_t) time(NULL);
 
     if (now_u32 < ts_begin) {
-        logger_noformat(proxy_context, LOG_INFO,
-                        "This certificate has not been activated yet");
+        if (proxy_context->ignore_timestamps != 0) {
+            logger_noformat(proxy_context, LOG_WARNING,
+                            "Clock might be off - "
+                            "Pretending that this certificate is valid no matter what");
+        } else {
+            logger_noformat(proxy_context, LOG_INFO,
+                            "This certificate has not been activated yet");
+        }
         return -1;
     }
     if (now_u32 > ts_end) {
@@ -198,9 +204,9 @@ cert_print_bincert_info(ProxyContext * const proxy_context,
            "from [%d-%02d-%02d] to [%d-%02d-%02d]",
            htonl(serial),
            ts_begin_tm.tm_year + 1900,
-           ts_begin_tm.tm_mon + 1, ts_begin_tm.tm_mday + 1,
+           ts_begin_tm.tm_mon + 1, ts_begin_tm.tm_mday,
            ts_end_tm.tm_year + 1900,
-           ts_end_tm.tm_mon + 1, ts_end_tm.tm_mday + 1);
+           ts_end_tm.tm_mon + 1, ts_end_tm.tm_mday);
 #endif
 }
 
@@ -402,16 +408,9 @@ cert_updater_update(ProxyContext * const proxy_context)
         return -1;
     }
     if (proxy_context->tcp_only != 0) {
-        (void) evdns_base_nameserver_ip_add(cert_updater->evdns_base,
-                                            proxy_context->resolver_ip);
-#ifdef WIN32
-        (void) evdns_base_config_windows_nameservers(cert_updater->evdns_base);
-#else
-        (void) evdns_base_resolv_conf_parse(cert_updater->evdns_base,
-                                            DNS_OPTION_NAMESERVERS,
-                                            "/etc/resolv.conf");
-#endif
-        (void) evdns_base_set_option(cert_updater->evdns_base, "attempts", "5");
+        (void) evdns_base_set_option(cert_updater->evdns_base, "use-tcp", "always");
+    } else {
+        (void) evdns_base_set_option(cert_updater->evdns_base, "use-tcp", "on-tc");
     }
     if (evdns_base_resolve_txt(cert_updater->evdns_base,
                                proxy_context->provider_name,
